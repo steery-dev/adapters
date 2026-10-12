@@ -1,0 +1,21 @@
+[package]
+name = "steery-adapter-joined"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Steery's adapter for hosts that join their machine: it lists the hosts that joined through Steery's server and carries a stream to one of them."
+
+[dependencies]
+steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.0.0" }
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "macros", "net", "sync", "time"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+url = "2"
+
+# Its own workspace, so it builds alone.
+[workspace]

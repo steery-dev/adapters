@@ -28,7 +28,7 @@ cd "$root"
 # Linux builds link glibc 2.30 at most, so they run in every current Linux image.
 targets=(aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu.2.30 aarch64-unknown-linux-gnu.2.30)
 # Each crate and the systems it is built for: `apple`, `linux` or `all`.
-crates=(macos:apple linux:linux daytona:all opensandbox:all)
+crates=(macos:apple linux:linux daytona:all opensandbox:all joined:all)
 
 rm -rf dist
 for zig_target in "${targets[@]}"; do

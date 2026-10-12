@@ -2,8 +2,9 @@
 
 An adapter connects [Steery](https://steery.dev) to one kind of machine: an operating system
 (`macos`, `linux`) or a vendor's service that makes hosts (`daytona`, `opensandbox`): a
-machine whose adapter makes hosts runs each conversation in a host of its own. The Steery
-runtime
+machine whose adapter makes hosts runs each conversation in a host of its own. `joined`
+makes none: its hosts are made by their owner's own system and join the machine through
+Steery's server. The Steery runtime
 starts an adapter as a child process and speaks the program protocol to it, JSON-RPC 2.0
 over standard input and output (`PROTOCOL.md` in
 [steery-dev/sdk](https://github.com/steery-dev/sdk)). Drivers, one
@@ -23,6 +24,7 @@ macos/       steery-adapter-macos: processes on macOS
 linux/       steery-adapter-linux: processes on Linux
 daytona/     steery-adapter-daytona: hosts on Daytona
 opensandbox/ steery-adapter-opensandbox: hosts on OpenSandbox
+joined/      steery-adapter-joined: hosts that join their machine through Steery's server
 ```
 
 Each crate is a Cargo workspace of its own, with its own `Cargo.lock`, so it builds alone.
@@ -45,7 +47,7 @@ cd adapters/linux && cargo build
 ```
 
 `./release.sh <tag>` builds every adapter with `--release --locked` with `cargo zigbuild`,
-into `dist/<target>/`: `daytona` and `opensandbox` for each target Steery runs on,
+into `dist/<target>/`: `daytona`, `opensandbox` and `joined` for each target Steery runs on,
 `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and
 `aarch64-unknown-linux-gnu` (the Linux builds linking glibc 2.30 at most); `macos` for the
 two Apple targets only, and `linux` for the two Linux targets only. It then packs them into
@@ -68,8 +70,8 @@ method it does not have, and its shutdown, one line per check; it exits 0 only w
 one passes. A read answered with a refusal word its method lists is an answer.
 `--setting NAME=VALUE` passes a setting to `initialize`, and `--setting NAME` takes its
 value from the environment, keeping a secret off the command line; a method that needs a
-required setting not given is skipped. `daytona` and `opensandbox` also have their own
-`cargo test`.
+required setting not given is skipped. `daytona`, `opensandbox` and `joined` also have
+their own `cargo test`.
 
 ## Writing an adapter
 
@@ -325,6 +327,40 @@ The check lists hosts on the server it is given; a local server is the
 `127.0.0.1` rather than the example's `host.docker.internal`: the endpoints the server
 hands out must be reachable from the Mac itself, where the adapter runs, and
 `host.docker.internal` resolves only inside containers.
+
+## joined
+
+`joined/` provides `hosts` for a machine whose hosts join it (`initialize` answers
+`machine: {provides: "hosts", keeps: "filesystem", idle: "none", optional: ["keepalive"],
+channel: "stream", os: "linux"}`, label *Your own hosts*). Each host is made, started and
+stopped by its owner's own system, runs `steery host join` with the machine's join token,
+and keeps a socket open to Steery's server (`specs/JOINED-HOSTS.md` in steery-dev/server).
+The adapter reaches those hosts only through that server, as the machine:
+
+- `hosts/list`: `GET /v1/join/hosts`, each host that ever joined, by the name it joined
+  with: `state` `started` while its socket is open, else `stopped`; `created_at` when it
+  first joined; its one label `name`. A filter on any other label, the runtime's
+  `steery-machine` among them, lists none without asking the server, so removing the
+  machine deletes nothing.
+- `hosts/channel` is a `stream` channel: a WebSocket to `/v1/join/control?host=<name>`,
+  which the server splices to the host's socket; the host connects it to its `serve`.
+  Binary frames are the bytes each way; the socket closing, from either end, is
+  `stream/closed`, with no exit code. A host whose socket is not open is refused `offline`
+  with the server's line ("<name> is offline: its system starts it").
+- `hosts/keepalive` answers `{}`: the host's own system decides when it stops.
+- `hosts/ensure`, `start`, `stop`, `delete` and the rest are methods it does not have
+  (`unknown method`): the runtime then adopts hosts from `hosts/list` alone and makes,
+  starts and stops none.
+
+It declares no setting: Steery's server hands it `STEERY_URL` and `STEERY_KEY` (the
+machine's own key) where it runs the machine. Errors read as `not-found` (HTTP 404),
+`offline` (not reached, HTTP 502–504, no answer in time, or the host not joined), or
+`refused`, each line the server's own message without the key. Build and check it:
+
+```sh
+cd joined && cargo build && cargo clippy && cargo test
+steery programs test target/debug/steery-adapter-joined
+```
 
 ## What Steery adds to a host
 
