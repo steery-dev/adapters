@@ -19,9 +19,8 @@ use steery_sdk::{Error, PROTOCOL, Program};
 /// macOS's mark, Apple's: one SVG path's `d` in a 24 by 24 box, filled with the even-odd rule.
 const MARK: &str = "M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.039 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-1.701";
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> io::Result<()> {
-    steery_sdk::serve(|_notifier| Mac::default()).await
+fn main() -> io::Result<()> {
+    steery_adapter_common::serve(|_notifier| Mac::default())
 }
 
 /// The adapter. It keeps only the person's home, given in `initialize`.
@@ -60,14 +59,27 @@ impl Program for Mac {
 
     #[cfg(target_os = "macos")]
     async fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+        use steery_adapter_common::blocking;
         use steery_sdk::{method, params as given, result};
         match method {
             method::PROCESS_START => result(macos::start(given(params)?)?),
-            method::PROCESS_LIST => result(macos::list(given(params)?)),
-            method::PROCESS_ENVIRON => result(macos::environ(given(params)?)?),
-            method::PROCESS_FILES => result(macos::files(given(params)?)?),
+            method::PROCESS_LIST => {
+                let list = given(params)?;
+                result(blocking(move || Ok(macos::list(list))).await?)
+            }
+            method::PROCESS_ENVIRON => {
+                let environ = given(params)?;
+                result(blocking(move || macos::environ(environ)).await?)
+            }
+            method::PROCESS_FILES => {
+                let files = given(params)?;
+                result(blocking(move || macos::files(files)).await?)
+            }
             method::PROCESS_LISTENING => result(macos::listening(given(params)?).await?),
-            method::PROCESS_SIGNAL => result(macos::signal(given(params)?)),
+            method::PROCESS_SIGNAL => {
+                let signal = given(params)?;
+                result(blocking(move || Ok(macos::signal(signal))).await?)
+            }
             method::SERVICE_PLAN => result(macos::service_plan(&self.home()?, given(params)?)?),
             method::SERVICE_STATUS => {
                 result(macos::service_status(&self.home()?, given(params)?).await?)

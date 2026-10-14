@@ -10,7 +10,7 @@ steery-sdk = { git = "https://github.com/steery-dev/sdk", rev = "f6724eccb38acc4
 steery-adapter-common = { path = "../common" }
 libc = "0.2"
 serde_json = "1"
-tokio = { version = "1", features = ["rt", "macros", "process", "time"] }
+tokio = { version = "1", features = ["rt", "process", "time"] }
 
 # Its own workspace, so it builds alone.
 [workspace]

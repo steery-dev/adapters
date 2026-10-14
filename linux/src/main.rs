@@ -28,9 +28,8 @@ const STATUS_BOUND: Duration = Duration::from_secs(8);
 /// runtime's 30 s bound.
 const SERVICE_BOUND: Duration = Duration::from_secs(28);
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> io::Result<()> {
-    steery_sdk::serve(|_notifier| Linux::default()).await
+fn main() -> io::Result<()> {
+    steery_adapter_common::serve(|_notifier| Linux::default())
 }
 
 /// The adapter. It keeps only the person's home, given in `initialize`.
@@ -68,14 +67,30 @@ impl Program for Linux {
     }
 
     async fn call(&self, method: &str, params: Value) -> Result<Value, Error> {
+        use steery_adapter_common::blocking;
         use steery_sdk::{params as given, result};
         match method {
             method::PROCESS_START => result(start(given(params)?)?),
-            method::PROCESS_LIST => result(list(given(params)?)),
-            method::PROCESS_ENVIRON => result(environ(given(params)?)?),
-            method::PROCESS_FILES => result(files(given(params)?)?),
-            method::PROCESS_LISTENING => result(listening(given(params)?)?),
-            method::PROCESS_SIGNAL => result(signal(given(params)?)),
+            method::PROCESS_LIST => {
+                let asked = given(params)?;
+                result(blocking(move || Ok(list(asked))).await?)
+            }
+            method::PROCESS_ENVIRON => {
+                let asked = given(params)?;
+                result(blocking(move || environ(asked)).await?)
+            }
+            method::PROCESS_FILES => {
+                let asked = given(params)?;
+                result(blocking(move || files(asked)).await?)
+            }
+            method::PROCESS_LISTENING => {
+                let asked = given(params)?;
+                result(blocking(move || listening(asked)).await?)
+            }
+            method::PROCESS_SIGNAL => {
+                let asked = given(params)?;
+                result(blocking(move || Ok(signal(asked))).await?)
+            }
             method::SERVICE_PLAN => result(self.service_plan(given(params)?)?),
             method::SERVICE_STATUS => result(self.service_status(given(params)?).await?),
             method::SERVICE_START => result(service_start(given(params)?).await?),

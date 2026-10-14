@@ -1,8 +1,9 @@
 //! What Steery's operating-system adapters share, where POSIX behaves the same on Linux and
-//! macOS: `process/start`'s detached start, with the `STEERY_STARTED` it sets and the
-//! status file it writes once it reaps the process; the files a process writes its output
-//! to; and a user's name. What the system itself keeps — `/proc` or libproc, systemd or
-//! launchd — stays in each adapter.
+//! macOS: how an adapter serves, with its reads of the system off the thread that reads
+//! the runtime's requests; `process/start`'s detached start, with the `STEERY_STARTED` it
+//! sets and the status file it writes once it reaps the process; the files a process
+//! writes its output to; and a user's name. What the system itself keeps — `/proc` or
+//! libproc, systemd or launchd — stays in each adapter.
 
 use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
@@ -14,7 +15,33 @@ use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 
 use steery_sdk::wire::process;
-use steery_sdk::{Error, refusal};
+use steery_sdk::{Error, Notifier, Program, refusal};
+
+/// Serves `make`'s program on one thread, whose work is reading the runtime's requests
+/// and writing answers, with at most one blocking thread per core for [`blocking`].
+pub fn serve<P: Program>(make: impl FnOnce(Notifier) -> P) -> io::Result<()> {
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(cores)
+        .build()?
+        .block_on(steery_sdk::serve(make))
+}
+
+/// `read` run on a blocking thread. The runtime asks for every process of the user at
+/// once (`process/files`, `process/environ`); run on the serving thread, a few thousand
+/// reads leave its requests unread until its input pipe is full, and the runtime kills a
+/// program whose request it cannot write within the call's bound.
+pub async fn blocking<T: Send + 'static>(
+    read: impl FnOnce() -> Result<T, Error> + Send + 'static,
+) -> Result<T, Error> {
+    tokio::task::spawn_blocking(read).await.unwrap_or_else(|e| {
+        Err(Error::refused(
+            refusal::REFUSED,
+            format!("reading the system failed: {e}"),
+        ))
+    })
+}
 
 /// Starts `start.argv` detached, in a session and process group of its own, with exactly
 /// the environment `start.env` (and `STEERY_STARTED=<this adapter's pid>:<what>` where
