@@ -6,7 +6,7 @@ license = "MIT"
 description = "Steery's adapter for macOS: it starts, finds and signals processes, and plans a launchd agent."
 
 [dependencies]
-steery-sdk = { git = "https://github.com/steery-dev/sdk", rev = "79b4624d640dd1409abb8fb9b1ee72aec2e7e391" }
+steery-sdk = { git = "https://github.com/steery-dev/sdk", rev = "f6724eccb38acc4ca85189366a5f03ceac7ff26e" }
 steery-adapter-common = { path = "../common" }
 libc = "0.2"
 serde_json = "1"

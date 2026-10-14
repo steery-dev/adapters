@@ -6,7 +6,7 @@ license = "MIT"
 description = "Steery's adapter for hosts that join their machine: it lists the hosts that joined through Steery's server and carries a stream to one of them."
 
 [dependencies]
-steery-sdk = { git = "https://github.com/steery-dev/sdk", rev = "79b4624d640dd1409abb8fb9b1ee72aec2e7e391" }
+steery-sdk = { git = "https://github.com/steery-dev/sdk", rev = "f6724eccb38acc4ca85189366a5f03ceac7ff26e" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["serde", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
