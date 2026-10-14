@@ -30,7 +30,8 @@ joined/      steery-adapter-joined: hosts that join their machine through Steery
 Each crate is a Cargo workspace of its own, with its own `Cargo.lock`, so it builds alone.
 What `linux` and `macos` share, where POSIX behaves the same on both, is the
 [`common`](common/) crate, `steery-adapter-common`, each naming it by path (`../common`):
-`process/start`'s detached start with its `STEERY_STARTED` and status file, the output
+`process/start`'s detached start with its `STEERY_STARTED`, status file and `held`
+standard input (an unlinked FIFO the process alone holds, so it never ends), the output
 files it appends to, and a user's name. What each system keeps — `/proc` or libproc,
 systemd or launchd — stays in its own adapter.
 

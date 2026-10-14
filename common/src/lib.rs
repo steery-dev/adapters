@@ -4,9 +4,10 @@
 //! to; and a user's name. What the system itself keeps — `/proc` or libproc, systemd or
 //! launchd — stays in each adapter.
 
-use std::ffi::CStr;
+use std::ffi::{CStr, CString, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write as _};
+use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::os::unix::process::ExitStatusExt as _;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,8 @@ use steery_sdk::{Error, refusal};
 /// `start.started` names one), so it outlives the adapter and the runtime. `process_start`
 /// reads the started process's start time, before it can be reaped: until it is, an
 /// exited child keeps its entry. Once reaped, how it ended is written to `start.status`.
-/// `start.scope` is the adapter's to have applied to `argv` already.
+/// `start.scope` is the adapter's to have applied to `argv` already. A `held` start's
+/// standard input never ends (`held`); `held` with `stdin` is refused `invalid`.
 pub fn start(
     start: process::Start,
     process_start: impl FnOnce(u32) -> Option<u64>,
@@ -34,9 +36,15 @@ pub fn start(
             format!("{what} {}: {e}", path.display()),
         )
     };
-    let stdin = match &start.stdin {
-        Some(path) => Stdio::from(File::open(path).map_err(|e| failed("stdin", path, e))?),
-        None => Stdio::null(),
+    let stdin = match (&start.stdin, start.held) {
+        (Some(_), true) => return Err(Error::invalid("held and stdin are both set")),
+        (Some(path), false) => {
+            Stdio::from(File::open(path).map_err(|e| failed("stdin", path, e))?)
+        }
+        (None, true) => Stdio::from(held().map_err(|e| {
+            Error::refused(refusal::START_FAILED, format!("held stdin: {e}"))
+        })?),
+        (None, false) => Stdio::null(),
     };
     let stdout = append(&start.stdout).map_err(|e| failed("stdout", &start.stdout, e))?;
     let stderr = append(&start.stderr).map_err(|e| failed("stderr", &start.stderr, e))?;
@@ -76,6 +84,34 @@ pub fn start(
         }
     });
     Ok(process::Started { pid, process_start })
+}
+
+/// A standard input that never ends: a FIFO in a private folder, opened for reading and
+/// writing, then unlinked with its folder. The process's own fd 0 is then a writer too, so
+/// its reads block and never see an end, and nothing outside it holds the FIFO: it
+/// outlives the adapter and the runtime restarting.
+fn held() -> io::Result<File> {
+    let template = std::env::temp_dir().join("steery-held-XXXXXX");
+    let mut template = CString::new(template.into_os_string().into_vec())?.into_bytes_with_nul();
+    // SAFETY: mkdtemp rewrites the template's X's in place, inside its NUL-terminated buffer.
+    if unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) }.is_null() {
+        return Err(io::Error::last_os_error());
+    }
+    template.pop();
+    let folder = PathBuf::from(OsString::from_vec(template));
+    let fifo = folder.join("stdin");
+    let opened = CString::new(fifo.as_os_str().as_bytes())
+        .map_err(io::Error::from)
+        .and_then(|path| {
+            // SAFETY: mkfifo reads one NUL-terminated path.
+            if unsafe { libc::mkfifo(path.as_ptr(), 0o600) } == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            OpenOptions::new().read(true).write(true).open(&fifo)
+        });
+    let _ = fs::remove_file(&fifo);
+    let _ = fs::remove_dir(&folder);
+    opened
 }
 
 /// Writes how a reaped child ended to `path`, mode 0600, whole: through a file beside it
@@ -181,7 +217,8 @@ mod tests {
 
     /// A start runs the command in a session of its own, with exactly the environment
     /// given and `STEERY_STARTED`, its output appended to files made 0600; once it is
-    /// reaped, how it ended is written whole, 0600.
+    /// reaped, how it ended is written whole, 0600. A held start's standard input never
+    /// ends, so a read waits until a signal ends it; held with `stdin` is refused.
     #[tokio::test]
     async fn a_start_is_detached_and_its_end_is_written() {
         let folder = folder("start");
@@ -204,6 +241,7 @@ mod tests {
                 ]),
                 cwd: folder.clone(),
                 stdin: None,
+                held: false,
                 stdout: stdout.clone(),
                 stderr: stderr.clone(),
                 scope: None,
@@ -226,6 +264,31 @@ mod tests {
         assert_eq!(fs::read_to_string(&stderr).unwrap(), "said\n");
         assert_eq!(mode(&stderr), 0o600);
         assert!(!folder.join("status.writing").exists());
+
+        let held_status = folder.join("held-status");
+        let held = |stdin: Option<PathBuf>| process::Start {
+            argv: vec!["/bin/sh".into(), "-c".into(), "read l; echo got".into()],
+            env: BTreeMap::new(),
+            cwd: folder.clone(),
+            stdin,
+            held: true,
+            stdout: folder.join("held-out"),
+            stderr: folder.join("held-err"),
+            scope: None,
+            started: None,
+            status: Some(held_status.clone()),
+        };
+        assert!(matches!(
+            start(held(Some(stdout.clone())), |_| Some(8)),
+            Err(Error::Invalid(_))
+        ));
+        let started = start(held(None), |_| Some(8)).unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert!(!held_status.exists(), "a held read never returns");
+        // SAFETY: kill signals one process.
+        assert_eq!(unsafe { libc::kill(started.pid as libc::pid_t, libc::SIGTERM) }, 0);
+        assert_eq!(ended(&held_status).await, process::Ended::Signal(libc::SIGTERM));
+        assert_eq!(fs::read_to_string(folder.join("held-out")).unwrap(), "");
         let _ = fs::remove_dir_all(&folder);
     }
 
@@ -240,6 +303,7 @@ mod tests {
             env: BTreeMap::new(),
             cwd: folder.clone(),
             stdin: None,
+            held: false,
             stdout: folder.join("out"),
             stderr: folder.join("err"),
             scope: None,
