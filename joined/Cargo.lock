@@ -155,7 +155,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -613,7 +613,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -891,7 +891,7 @@ dependencies = [
 [[package]]
 name = "steery-sdk"
 version = "3.3.0"
-source = "git+https://github.com/steery-dev/sdk?rev=f6724eccb38acc4ca85189366a5f03ceac7ff26e#f6724eccb38acc4ca85189366a5f03ceac7ff26e"
+source = "git+https://github.com/steery-dev/sdk?tag=v3.3.0#f6724eccb38acc4ca85189366a5f03ceac7ff26e"
 dependencies = [
  "libc",
  "serde",
