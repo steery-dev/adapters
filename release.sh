@@ -35,10 +35,14 @@ for zig_target in "${targets[@]}"; do
   target=${zig_target%.2.30}
   case $target in *-apple-darwin) os=apple ;; *) os=linux ;; esac
   mkdir -p "dist/$target"
+  # zig 0.16 refuses the `-oso_prefix` rustc passes for Apple targets; a Mac links its own
+  # targets with Apple's linker.
+  build=(cargo zigbuild)
+  [[ $os == apple && $(uname -s) == Darwin ]] && build=(cargo build)
   for entry in "${crates[@]}"; do
     crate=${entry%%:*} on=${entry#*:}
     [[ $on == all || $on == "$os" ]] || continue
-    (cd "$crate" && cargo zigbuild --release --locked --target "$zig_target")
+    (cd "$crate" && "${build[@]}" --release --locked --target "$zig_target")
     cp "$crate/target/$target/release/steery-adapter-$crate" "dist/$target/"
   done
 done
