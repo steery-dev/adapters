@@ -6,7 +6,7 @@ license = "MIT"
 description = "Steery's adapter for OpenSandbox: it makes, starts, pauses and deletes hosts, writes files into them and carries a stream to a command inside one."
 
 [dependencies]
-steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.3.0" }
+steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.5.0" }
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["now", "std"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }

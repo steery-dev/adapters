@@ -6,7 +6,7 @@ license = "MIT"
 description = "Steery's adapter for Daytona: it makes, starts, stops and reaches hosts on Daytona through Daytona's REST API."
 
 [dependencies]
-steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.3.0" }
+steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.5.0" }
 base64 = "0.22"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "multipart", "http2"] }
 serde = { version = "1", features = ["derive"] }

@@ -84,6 +84,7 @@ impl Program for Joined {
                 persist: None,
                 idle: wire::Idle::None,
                 optional: vec![wire::Optional::Keepalive],
+                builds: false,
                 channel: wire::Channel::Stream,
                 os: wire::Os::Linux,
                 unavailable: None,

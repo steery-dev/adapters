@@ -6,7 +6,7 @@ license = "MIT"
 description = "What Steery's operating-system adapters share where POSIX behaves the same on each: a process started detached, how it ended, the files it writes to, and a user's name."
 
 [dependencies]
-steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.3.0" }
+steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.5.0" }
 libc = "0.2"
 serde_json = "1"
 tokio = { version = "1", features = ["rt", "process"] }

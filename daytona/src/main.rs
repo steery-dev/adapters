@@ -42,6 +42,8 @@ const POLL: Duration = Duration::from_secs(1);
 const ARCHIVE_POLL: Duration = Duration::from_secs(2);
 /// The states a host that is being changed fails in.
 const FAILED: &[&str] = &["error", "build_failed"];
+/// The states of a host whose image Daytona still builds from a Dockerfile.
+const BUILDING: &[&str] = &["pending_build", "building_snapshot"];
 /// The longest line a refusal carries.
 const LINE_CHARS: usize = 300;
 
@@ -129,7 +131,12 @@ impl Program for Adapter {
                 keeps: wire::Survives::Filesystem,
                 persist: None,
                 idle: wire::Idle::Activity,
-                optional: vec![wire::Optional::Archive, wire::Optional::Keepalive],
+                optional: vec![
+                    wire::Optional::Archive,
+                    wire::Optional::Keepalive,
+                    wire::Optional::Expose,
+                ],
+                builds: true,
                 channel: wire::Channel::Argv,
                 os: wire::Os::Linux,
                 unavailable,
@@ -184,6 +191,7 @@ impl Program for Adapter {
             method::HOSTS_DELETE => result(delete(daytona()?, given(params)?).await?),
             method::HOSTS_ARCHIVE => result(archive(daytona()?, given(params)?).await?),
             method::HOSTS_KEEPALIVE => result(keepalive(daytona()?, given(params)?).await?),
+            method::HOSTS_EXPOSE => result(expose(daytona()?, given(params)?).await?),
             method::HOSTS_PUT => result(put(daytona()?, given(params)?).await?),
             method::HOSTS_CHANNEL => {
                 self.reach()?;
@@ -333,6 +341,12 @@ async fn ensure(daytona: &Daytona, params: hosts::Ensure) -> Result<hosts::Named
     let (snapshot, build_info) = match &params.source {
         Some(hosts::Source::Snapshot(snapshot)) => (Some(snapshot.as_str()), None),
         Some(hosts::Source::Image(reference)) => (None, Some(BuildInfo::image(reference))),
+        Some(hosts::Source::Dockerfile(text)) => (
+            None,
+            Some(BuildInfo {
+                dockerfile_content: text.clone(),
+            }),
+        ),
         None => (None, None),
     };
     let create = Create {
@@ -353,6 +367,13 @@ async fn ensure(daytona: &Daytona, params: hosts::Ensure) -> Result<hosts::Named
                 }
                 // A host being deleted keeps its name until it is gone.
                 Ok(found) if matches!(found.state(), "destroying" | "destroyed") => {}
+                // A host found while its image builds is answered once it has started.
+                Ok(found) if BUILDING.contains(&found.state()) => {
+                    daytona
+                        .wait(&found.id, &["started"], FAILED, "start", POLL, deadline)
+                        .await?;
+                    return Ok(found.id);
+                }
                 Ok(found) => return Ok(found.id),
                 Err(Fault::NotFound(_)) => match daytona.create(&create, deadline).await {
                     Ok(made) => {
@@ -486,6 +507,25 @@ async fn keepalive(daytona: &Daytona, params: hosts::Target) -> Result<wire::Emp
         .await
         .map_err(|fault| refuse(daytona, fault, refusal::REFUSED))?;
     Ok(wire::Empty {})
+}
+
+/// Makes the host public, so Daytona's proxy lets any caller through without its own
+/// token, and answers the port's preview URL, which is made from the host's id and port
+/// and so stays the same while the host lives. The service behind it checks its own key.
+async fn expose(daytona: &Daytona, params: hosts::Expose) -> Result<hosts::Exposed, Error> {
+    let id = named(&params.host)?;
+    let deadline = Deadline::after(CHANGE_SECONDS);
+    let exposed = async {
+        daytona.act(id, "public/true", deadline).await?;
+        daytona.preview(id, params.port, deadline).await
+    };
+    let url = exposed
+        .await
+        .map_err(|fault| refuse(daytona, fault, refusal::REFUSED))?;
+    Ok(hosts::Exposed {
+        url,
+        headers: BTreeMap::new(),
+    })
 }
 
 /// Uploads the file, proves its size on the host, and sets its mode. An upload can answer

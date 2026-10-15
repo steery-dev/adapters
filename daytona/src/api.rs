@@ -136,6 +136,13 @@ struct FileInfo {
     size: u64,
 }
 
+/// A port's preview, as `GET /sandbox/{id}/ports/{port}/preview-url` answers it. Its
+/// `token` is unread: a public host's URL needs none.
+#[derive(Deserialize)]
+struct Preview {
+    url: String,
+}
+
 /// A time by which a method answers.
 #[derive(Clone, Copy)]
 pub struct Deadline {
@@ -277,7 +284,8 @@ impl Daytona {
         .await
     }
 
-    /// `POST /sandbox/{id}/{action}`: `start`, `stop`, `archive`, `last-activity`.
+    /// `POST /sandbox/{id}/{action}`: `start`, `stop`, `archive`, `last-activity`,
+    /// `public/true`.
     pub async fn act(&self, id: &str, action: &str, deadline: Deadline) -> Result<(), Fault> {
         send(self.control(Method::POST, &host_path(id, action), deadline)?)
             .await
@@ -288,6 +296,15 @@ impl Daytona {
         send(self.control(Method::DELETE, &host_path(id, ""), deadline)?)
             .await
             .map(drop)
+    }
+
+    /// `GET /sandbox/{id}/ports/{port}/preview-url`: the URL Daytona's proxy reaches `port`
+    /// of host `id` by.
+    pub async fn preview(&self, id: &str, port: u16, deadline: Deadline) -> Result<String, Fault> {
+        let path = host_path(id, &format!("ports/{port}/preview-url"));
+        let preview: Preview =
+            json(send(self.control(Method::GET, &path, deadline)?).await?).await?;
+        Ok(preview.url)
     }
 
     pub async fn ssh_access(

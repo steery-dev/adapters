@@ -132,6 +132,7 @@ impl Program for OpenSandbox {
                 persist: None,
                 idle: wire::Idle::Ttl,
                 optional: vec![wire::Optional::Pause, wire::Optional::Keepalive],
+                builds: false,
                 channel: wire::Channel::Stream,
                 os: wire::Os::Linux,
                 unavailable: None,
@@ -294,6 +295,12 @@ async fn ensure(provider: &Provider, asked: Ensure) -> Result<Named, Error> {
             "resourceLimits": {},
             "metadata": metadata,
         }),
+        // Its facts say no `builds`, so the runtime never asks for one.
+        Some(Source::Dockerfile(_)) => {
+            return Err(Error::invalid(
+                "OpenSandbox builds no Dockerfile: name an image or a snapshot",
+            ));
+        }
         None => {
             return Err(Error::refused(
                 refusal::NO_PLACE,

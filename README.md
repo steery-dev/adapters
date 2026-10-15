@@ -193,7 +193,7 @@ method.
 
 `daytona/` provides `hosts` on [Daytona](https://daytona.io) (`initialize` answers
 `machine: {provides: "hosts", keeps: "filesystem", idle: "activity", optional:
-["archive", "keepalive"], channel: "argv", os: "linux"}`). It calls Daytona's published
+["archive", "keepalive", "expose"], builds: true, channel: "argv", os: "linux"}`). It calls Daytona's published
 REST API directly, over HTTPS (rustls): the control plane ([`openapi.json`](https://www.daytona.io/docs/openapi.json)) and each host's
 toolbox ([`toolbox-openapi.json`](https://www.daytona.io/docs/toolbox-openapi.json)),
 through the toolbox proxy Daytona names for it. Daytona's own words for a host (its API
@@ -205,17 +205,22 @@ and leaves Daytona's auto-stop as the host's idle timer.
   Daytona's listing lags a change by a second or more.
 - `hosts/ensure`: the host named `steery-<first 128 bits of the key's SHA-256, hex>`, or
   one made under that name, labelled `steery=host`, `steery-key=<key>` and the labels
-  asked, from the snapshot or image (built `FROM` it) the runtime names, or Daytona's
-  default snapshot, with the environment `DAYTONA_ENV` names (Daytona's `env`, sent only
-  when given), and waited for until it runs. Daytona keeps names unique and reads them
-  back at once, so an ensure sent twice, even at once, makes one host. A host of that name
-  without those labels is refused; one being deleted is waited out.
+  asked, from the snapshot, the image (built `FROM` it) or the Dockerfile (Daytona's
+  `buildInfo.dockerfileContent`, built in your account once per text) the runtime names, or
+  Daytona's default snapshot, with the environment `DAYTONA_ENV` names (Daytona's `env`,
+  sent only when given), and waited for until it runs, through `pending_build` and
+  `building_snapshot`. Daytona keeps names unique and reads them back at once, so an
+  ensure sent twice, even at once, makes one host. A host of that name without those
+  labels is refused; one being deleted is waited out; one still building is waited for.
 - `hosts/start`, `stop`, `delete` and `archive` ask Daytona and wait until the host is
   `started`, `stopped`, `destroyed` or `archived`, reading it again every second (every
   two while archiving); `error` or `build_failed` fails. Archive stops a started host
   first, since Daytona archives only a stopped one. Its filesystem survives a stop and an
   archive.
 - `hosts/keepalive` refreshes the host's last activity, which auto-stop counts from.
+- `hosts/expose` makes the host public (`POST /sandbox/{id}/public/true`) and answers the
+  port's preview URL (`https://<port>-<id>.<Daytona's proxy>`), with no headers: any caller
+  reaches it, so the service behind it checks its own key.
 - `hosts/put` uploads the file (`/files/upload-v2`), reads its size back
   (`/files/info`) and sets its mode (`/files/permissions`). A file that timed out or came
   out short is deleted and the put refused; a large file is better fetched from inside.
@@ -377,8 +382,17 @@ set up with `steery setup --adapter daytona`) adds to each host it uses:
   program added on the computer, from its release, for the host's target;
 - the harness's MCP entry, skill and hooks, as on a laptop.
 
-It adds nothing else. The host is yours: your snapshot, your Daytona settings, your
-harness, set up the way you already set them up.
+Where you name no source and the adapter builds (`daytona`), Steery makes every host from
+its own Dockerfile, built by Daytona in your account once per Steery release: Daytona's
+sandbox image with Claude Code, omp and `cli-proxy-api`. One more host, the machine's
+keeper, runs `cli-proxy-api` holding your Claude accounts on its own disk, reached by
+`hosts/expose`; every other host's Claude Code and omp reach it by `ANTHROPIC_BASE_URL`,
+`ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY`, unless the host sets them itself
+(`DAYTONA_ENV` wins). You sign accounts in through Steery request cards; tokens never leave
+your Daytona account.
+
+It adds nothing else. With your own source the host is yours: your snapshot, your Daytona
+settings, your harness, set up the way you already set them up.
 
 A new machine makes one host of its own as soon as it runs, so it learns which harnesses
 your image has and offers them. That host is stopped when idle like any other, and the
