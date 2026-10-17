@@ -18,12 +18,17 @@ use steery_sdk::wire::process;
 use steery_sdk::{Error, Notifier, Program, refusal};
 
 /// Serves `make`'s program on one thread, whose work is reading the runtime's requests
-/// and writing answers, with at most one blocking thread per core for [`blocking`].
+/// and writing answers, with one blocking thread per core for [`blocking`] besides those
+/// the requests and answers take.
 pub fn serve<P: Program>(make: impl FnOnce(Notifier) -> P) -> io::Result<()> {
     let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    // Tokio reads stdin on a blocking thread it holds until a line comes, and writes each
+    // answer on another: on a one-core host, a cap of `cores` left every answer waiting
+    // for the runtime's next request.
+    const STDIO: usize = 2;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .max_blocking_threads(cores)
+        .max_blocking_threads(cores + STDIO)
         .build()?
         .block_on(steery_sdk::serve(make))
 }
