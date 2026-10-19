@@ -387,10 +387,13 @@ impl Linux {
     /// Three units, as the runtime installs itself: `<label>.service` runs the binary in
     /// `<label>.slice`, handed its listener by `<label>.socket` on 127.0.0.1:`port`, and
     /// the slice bounds it and everything it starts to `cpu` percent of the CPU this
-    /// computer grants the user. The service keeps every directory of the `PATH` the unit
-    /// on disk gave it. The commands load the units, enable the socket and the service,
-    /// bind the socket again only where its address moved, and let the user linger, which
-    /// may be refused: the runtime then runs while the user is logged in.
+    /// computer grants the user and of its physical memory: the kernel reclaims and
+    /// throttles the slice from nine tenths of that memory and kills inside it at the
+    /// whole, so the slice never runs the computer out of memory. The service keeps every
+    /// directory of the `PATH` the unit on disk gave it. The commands load the units,
+    /// enable the socket and the service, bind the socket again only where its address
+    /// moved, and let the user linger, which may be refused: the runtime then runs while
+    /// the user is logged in.
     fn service_plan(&self, plan: process::ServicePlan) -> Result<process::Plan, Error> {
         let label = unit_label(&plan.label)?;
         if !(1..=100).contains(&plan.cpu) {
@@ -463,13 +466,17 @@ impl Linux {
             port = plan.port,
         );
         let quota = (granted_cpu(label) * u64::from(plan.cpu) / 100).max(1);
+        let memory_high = (u16::from(plan.cpu) * 9 / 10).max(1);
+        let memory_max = plan.cpu;
         let slice_unit = format!(
             "[Unit]\n\
              Description=Steery runtime and what it starts ({label})\n\n\
              [Slice]\n\
              CPUWeight=20\n\
              IOWeight=20\n\
-             CPUQuota={quota}%\n"
+             CPUQuota={quota}%\n\
+             MemoryHigh={memory_high}%\n\
+             MemoryMax={memory_max}%\n"
         );
         // A socket whose address stands keeps its queue for the next runtime; one whose
         // address moved is bound again.

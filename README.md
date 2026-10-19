@@ -149,7 +149,8 @@ another target is kept beside the record, so a host gets the Linux build it need
   `<label>.service` (the binary, `Restart=always`, `KillMode=process`, output appended to
   `log`, the `PATH` asked for merged with the one the unit on disk gave), `<label>.socket`
   (`ListenStream=127.0.0.1:<port>`, handed to the runtime) and `<label>.slice`
-  (`CPUQuota` of `cpu` percent of what the computer grants). Its commands reload systemd,
+  (`CPUQuota` of `cpu` percent of what the computer grants; `MemoryMax` of `cpu` percent
+  of physical memory, `MemoryHigh` nine tenths of it). Its commands reload systemd,
   enable the socket and the service, bind the socket again only where its unit changed,
   and `loginctl enable-linger`, which may fail.
 - `service/status` answers whether the unit is on disk and systemd runs it, its pid, and
