@@ -56,4 +56,9 @@ done
 "${STEERY:-steery}" programs pack --release "$tag" --out dist/release "${folders[@]}"
 
 [[ $publish -eq 1 ]] || exit 0
-gh release create "$tag" --title "$tag" dist/release/*
+# Releases run side by side: tag the commit this build came from, never the default
+# branch's tip, which another release may have moved.
+commit=$(git rev-parse HEAD)
+git fetch --quiet origin
+[[ -n $(git branch -r --contains "$commit") ]] || { echo "release.sh: push $commit first" >&2; exit 1; }
+gh release create "$tag" --title "$tag" --target "$commit" dist/release/*
