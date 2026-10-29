@@ -1,0 +1,22 @@
+[package]
+name = "steery-adapter-boat"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Steery's adapter for Boat: it makes, starts, stops and reaches hosts on Boat (boat.dev) through Boat's REST API and SSH."
+
+[dependencies]
+steery-sdk = { git = "https://github.com/steery-dev/sdk", tag = "v3.5.0" }
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+time = { version = "0.3", features = ["parsing"] }
+tokio = { version = "1", features = ["rt", "macros", "time", "process", "io-util", "sync"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["net", "io-util"] }
+
+# Its own workspace, so it builds alone.
+[workspace]

@@ -1,7 +1,7 @@
 # Steery adapters
 
 An adapter connects [Steery](https://steery.dev) to one kind of machine: an operating system
-(`macos`, `linux`) or a vendor's service that makes hosts (`daytona`, `opensandbox`): a
+(`macos`, `linux`) or a vendor's service that makes hosts (`daytona`, `opensandbox`, `boat`): a
 machine whose adapter makes hosts runs each conversation in a host of its own. `joined`
 makes none: its hosts are made by their owner's own system and join the machine through
 Steery's server. The Steery runtime
@@ -24,6 +24,7 @@ macos/       steery-adapter-macos: processes on macOS
 linux/       steery-adapter-linux: processes on Linux
 daytona/     steery-adapter-daytona: hosts on Daytona
 opensandbox/ steery-adapter-opensandbox: hosts on OpenSandbox
+boat/        steery-adapter-boat: hosts on Boat
 joined/      steery-adapter-joined: hosts that join their machine through Steery's server
 ```
 
@@ -53,7 +54,7 @@ Every build goes through [Kache](https://github.com/kunobi-ninja/kache), the com
 [APT package](https://kunobi.ninja/docs/kache/getting-started/installation) on Linux.
 
 `./release.sh <tag>` builds every adapter with `--release --locked` with `cargo zigbuild`,
-into `dist/<target>/`: `daytona`, `opensandbox` and `joined` for each target Steery runs on,
+into `dist/<target>/`: `daytona`, `opensandbox`, `boat` and `joined` for each target Steery runs on,
 `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu` and
 `aarch64-unknown-linux-gnu` (the Linux builds linking glibc 2.30 at most); `macos` for the
 two Apple targets only, and `linux` for the two Linux targets only. It then packs them into
@@ -76,7 +77,7 @@ method it does not have, and its shutdown, one line per check; it exits 0 only w
 one passes. A read answered with a refusal word its method lists is an answer.
 `--setting NAME=VALUE` passes a setting to `initialize`, and `--setting NAME` takes its
 value from the environment, keeping a secret off the command line; a method that needs a
-required setting not given is skipped. `daytona`, `opensandbox` and `joined` also have
+required setting not given is skipped. `daytona`, `opensandbox`, `boat` and `joined` also have
 their own `cargo test`.
 
 ## Writing an adapter
@@ -339,6 +340,98 @@ The check lists hosts on the server it is given; a local server is the
 `127.0.0.1` rather than the example's `host.docker.internal`: the endpoints the server
 hands out must be reachable from the Mac itself, where the adapter runs, and
 `host.docker.internal` resolves only inside containers.
+
+## boat
+
+`boat/` provides `hosts` on [Boat](https://boat.dev) (`initialize` answers `machine:
+{provides: "hosts", keeps: "filesystem", idle: "ttl", optional: ["keepalive", "expose"],
+builds: true, channel: "argv", os: "linux"}`). It calls Boat's published REST API
+([`boat-v1.yaml`](https://docs.boat.dev/openapi/boat-v1.yaml)) directly, over HTTPS
+(rustls), and reaches each host with OpenSSH. Boat's own words for a host (its API paths,
+where a host is a sandbox and a stopped one is `archived`) stay inside `src/api.rs`, whose
+items are named by Steery's words. What a host gets beside Boat's own Ubuntu image is what
+its person names: a Boat environment (its secrets, secret files, repositories and logins),
+variables and a size; and, where the runtime names a Dockerfile, the image it builds.
+
+- `hosts/list`: the hosts labelled `steery=host` and every label asked, page by page;
+  one Boat cancelled (a make that got no machine) is none.
+- `hosts/ensure`: the oldest host labelled `steery=host` and `steery-key=<key>`, or one made
+  now (named `steery-<first 128 bits of the key's SHA-256, hex>`) with those labels and the
+  labels asked, from the saved snapshot the runtime names, the Dockerfile's image, or Boat's
+  own image, with the environment, variables and size its settings name, and waited for
+  until it runs (`ready`, `idle` or `running`). Boat's listing reads a new host back at
+  once, and each make is sent under an idempotency key from the key and its source, so a
+  make whose answer was lost is taken once. An image (`{image}`) is refused: Boat pulls none.
+- **A Dockerfile** is built the way Boat can: Boat starts every sandbox from its own image,
+  so the Dockerfile's steps run in order, as the setup script of a host made for the build
+  (labelled `steery=build`, `steery-build=<digest>`), and once they end well that host is
+  kept as the saved snapshot `steery-image-<first 64 bits of the text's SHA-256, hex>`, and
+  deleted. The same text is built once; every host of it is made from that snapshot, and
+  keeps its own disk when the snapshot is later forgotten. `RUN` (shell and exec form),
+  `USER` (`root` runs under `sudo`; any other user is the sandbox's own, `user`), `ENV` and
+  `ARG` (for the steps that follow, `$NAME` read as Docker reads it) and `WORKDIR` are
+  carried; `FROM` names an image Boat cannot start from, so Boat's own is used; a second
+  `FROM`, `COPY`, `ADD` and `RUN --mount` are refused, naming their line; what only a
+  container's start reads (`LABEL`, `CMD`, `ENTRYPOINT`, `EXPOSE`, …) changes no disk. A
+  failing step stops the build (`setupError` names its line and exit), its host is deleted,
+  and the next ensure builds again; a build an adapter left when it stopped is taken up. Only
+  the newest three of Steery's images are kept: ten saved snapshots are free.
+- `hosts/start` resumes a stopped host (`POST /sandboxes/{id}/resume`, its auto-stop set 30
+  minutes on) and waits until it runs; `hosts/stop` stops it (Boat keeps its disk) and waits
+  until it is `archived`; `hosts/delete` deletes it and its disk and waits until Boat has
+  it no more. Boat keeps a stopped host's disk for 14 days: a start after that is
+  `not-found`, the host gone for good.
+- `hosts/keepalive` sets the host's auto-stop 30 minutes from now (`PATCH`), past the
+  runtime's own idle stop, so Boat stops only a host the runtime no longer reads.
+- `hosts/expose` hosts the port on a public HTTPS URL (`POST /sandboxes/{id}/host`,
+  `public: true`, `https://<host>-<port>.on.boat.dev`), the same while the host lives, with
+  no headers: any caller reaches it, so the service behind it checks its own key.
+- `hosts/channel` is an `argv` channel: `ssh -T` with the adapter's own ed25519 key (made
+  with `ssh-keygen` in `<config>/adapters/boat/`, kept 0700), which Boat lets into the host
+  first (`POST /sandboxes/{id}/sshkey`), to the address Boat answers (its forwarded IPv4
+  `host:port`, else the machine's own on port 22), the host key Boat answers pinned in a
+  file of that host's own (`StrictHostKeyChecking=yes`), running the runtime's command,
+  quoted for the host's shell.
+- `hosts/put` writes the file over the same `ssh`, its bytes on standard input: into a file
+  beside it that becomes it (`mv`) only once every byte arrived, with its mode, so a short
+  write is refused and leaves nothing behind. Any path the host's user writes, up to the
+  protocol's 12 MiB.
+
+The channel and the put run `ssh` and `ssh-keygen` on the controlling computer, so an
+OpenSSH client there is a prerequisite; where none is on `PATH`, `initialize` says so as
+`unavailable`, and `hosts/channel`, `hosts/put` and `hosts/list` refuse `refused`.
+
+It waits for Boat inside the runtime's bounds: 280 s for `ensure` (an image's build
+included), `start` and `put` (bound 300 s), 55 s for the rest (bound 60 s). Errors read as
+`not-found` (HTTP 404); `offline` where Boat is down — not reached, a gateway answering for
+it (HTTP 502, 503, 504), or a request with no answer in its time; `no-place` for a make Boat
+has no room for (HTTP 429: the plan's sandboxes at once or starts a minute; HTTP 503
+`no_ready_machine`), which the runtime waits out; `refused` for a refused API key (HTTP
+401), whose line names the setting to give again (`Boat refused the API key (HTTP 401: …):
+give BOAT_API_KEY again`); `start-failed` (a host or image that could not be made or
+resumed); or `refused`, which is also a host that did not reach the state asked for in
+time. Each line is Boat's own message, without the API key.
+
+Its settings, given once where the machine is added (on Steery's web for a cloud machine,
+or `steery setup --adapter boat --setting NAME[=VALUE]` on a computer):
+
+| Setting | | |
+|---|---|---|
+| `BOAT_API_KEY` | secret, required | an API key from <https://boat.dev/dashboard> (API keys), or `boat api-key create steery` |
+| `BOAT_TYPE` | optional | the size of every host: `small`, `default`, `large` or `xlarge`; absent: Boat's default (4 vCPU, 8 GB) |
+| `BOAT_ENVIRONMENT` | optional | the [Boat environment](https://docs.boat.dev/environments.md) every host gets: its secrets, secret files, repositories and logins (an MCP server's token, a `.env`, a private registry's login); absent: your account's default |
+| `BOAT_ENV` | secret, optional | environment set on every host it makes, one `NAME=VALUE` per line (blank and `#` lines skipped; the value is everything after the first `=`), passed to Boat as it is; a malformed line refuses `initialize` naming its line number, never its value |
+| `BOAT_API_URL` | optional | Boat's API URL, for a Boat other than boat.dev; absent: `https://boat.dev/api/v1` |
+
+It reads them from `initialize` only, never from its environment or a file. Build and
+check it:
+
+```sh
+cd boat && cargo build && cargo clippy && cargo test
+BOAT_API_KEY=… steery programs test target/debug/steery-adapter-boat --setting BOAT_API_KEY
+```
+
+With the key, the check also lists your hosts (`hosts/list`); it makes none.
 
 ## joined
 
