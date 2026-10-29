@@ -18,7 +18,7 @@ mod ssh;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use base64::Engine;
@@ -56,6 +56,17 @@ const BUILD_POLL: Duration = Duration::from_secs(3);
 const LINE_CHARS: usize = 300;
 /// The sizes Boat makes.
 const SIZES: &[&str] = &["small", "default", "large", "xlarge"];
+/// How long a stopped host is kept before its disk is refreshed. Boat deletes a stopped
+/// sandbox's disk 14 days after it stopped; one stopped this long is started and stopped
+/// again, which keeps it 14 days more, so the runtime's own 30-day delete is what ends a
+/// host that is never used again, as on Daytona, and the model keeper's sign-ins are kept.
+const REFRESH_AFTER: Duration = Duration::from_secs(10 * 24 * 60 * 60);
+/// How often stopped hosts are looked at, and how long after the adapter starts first.
+const REFRESH_EVERY: Duration = Duration::from_secs(60 * 60);
+const REFRESH_FIRST: Duration = Duration::from_secs(10 * 60);
+/// How long a refreshed host runs before it is stopped again: a start the runtime makes
+/// meanwhile has its `steery host serve` running by then, and that host is left running.
+const SETTLE: Duration = Duration::from_secs(20);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
@@ -67,7 +78,7 @@ async fn main() -> io::Result<()> {
 /// the pair once read; and the one build of an image at a time.
 #[derive(Default)]
 struct Adapter {
-    boat: OnceLock<Option<Boat>>,
+    boat: OnceLock<Option<Arc<Boat>>>,
     ssh: OnceLock<bool>,
     folder: OnceLock<PathBuf>,
     keys: Mutex<Option<ssh::Keys>>,
@@ -160,7 +171,15 @@ impl Program for Adapter {
             ),
             None => None,
         };
-        let _ = self.boat.set(boat);
+        let boat = boat.map(Arc::new);
+        // Every stopped host's disk is kept past Boat's 14 days while this adapter runs.
+        if let (Ok(()), Some(boat), Ok(runtime)) = (
+            self.boat.set(boat.clone()),
+            boat,
+            tokio::runtime::Handle::try_current(),
+        ) {
+            runtime.spawn(refreshing(boat));
+        }
         let _ = self.folder.set(params.config.join("adapters").join("boat"));
         // Said up front (PROTOCOL.md §3.2), so no machine is added where its channel cannot
         // run; the channel, the put and the list still refuse, as the guard where used.
@@ -732,6 +751,80 @@ async fn prune(boat: &Boat, keep: &str, deadline: Deadline) {
     }
 }
 
+/// Refreshes every stopped host's disk before Boat deletes it ([`REFRESH_AFTER`]): the
+/// hosts and templates of this Boat account Steery made, every [`REFRESH_EVERY`] from
+/// [`REFRESH_FIRST`] after the adapter started. Logged, never failed.
+async fn refreshing(boat: Arc<Boat>) {
+    tokio::time::sleep(REFRESH_FIRST).await;
+    let mut every = tokio::time::interval(REFRESH_EVERY);
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        every.tick().await;
+        for label in [MINE, TEMPLATE] {
+            let labels = BTreeMap::from([(label.0.to_owned(), label.1.to_owned())]);
+            let hosts = match boat
+                .list(&labels, None, Deadline::after(CHANGE_SECONDS))
+                .await
+            {
+                Ok(hosts) => hosts,
+                Err(fault) => {
+                    eprintln!("boat: the stopped hosts to refresh were not read: {fault:?}");
+                    continue;
+                }
+            };
+            let now = now_millis();
+            for host in hosts.iter().filter(|host| due(host, now)) {
+                match refreshed(&boat, &host.id).await {
+                    Ok(state) => eprintln!("boat: host {} refreshed: {state}", host.id),
+                    Err(fault) => eprintln!("boat: host {} was not refreshed: {fault:?}", host.id),
+                }
+            }
+        }
+    }
+}
+
+/// Whether `host`'s disk is refreshed at `now` (milliseconds since 1970): stopped for
+/// [`REFRESH_AFTER`] or more, and still kept by Boat.
+fn due(host: &api::Host, now: u128) -> bool {
+    let stopped = millis(host.stopped_at.as_deref());
+    host.state() == "archived"
+        && host.data_expired_at.is_none()
+        && stopped > 0
+        && now.saturating_sub(u128::from(stopped)) >= REFRESH_AFTER.as_millis()
+}
+
+/// Starts the stopped host `id` and, [`SETTLE`] later, stops it again, which starts Boat's
+/// 14 days afresh; one whose `steery host serve` runs by then, started by the runtime in
+/// the meantime, is left running for the runtime to stop once idle.
+async fn refreshed(boat: &Boat, id: &str) -> Result<&'static str, Fault> {
+    let deadline = Deadline::after(LONG_SECONDS);
+    boat.act(id, "resume", json!({ "ttlSeconds": TTL_SECONDS }), deadline)
+        .await?;
+    boat.wait(id, RUNNING, FAILED, "start", POLL, deadline)
+        .await?;
+    tokio::time::sleep(SETTLE).await;
+    let (_, said) = boat
+        .run(
+            id,
+            // `[s]` so the pattern does not find the shell this command runs in.
+            "pgrep -f 'steery host [s]erve' >/dev/null && echo used || echo unused",
+            20,
+            deadline,
+        )
+        .await?;
+    if said.trim() == "used" {
+        return Ok("used since it started, left running");
+    }
+    match boat.act(id, "stop", json!({}), deadline).await {
+        Ok(()) => {}
+        Err(Fault::Conflict { code, .. }) if code == "sandbox_stopping" => {}
+        Err(fault) => return Err(fault),
+    }
+    boat.wait(id, &["archived"], &["error"], "stop", POLL, deadline)
+        .await?;
+    Ok("kept 14 days more")
+}
+
 /// Resumes a stopped host, and waits until it runs; one running already is answered as
 /// it is. One whose disk Boat no longer keeps (14 days after it stopped) is `not-found`:
 /// gone for good.
@@ -1122,5 +1215,30 @@ mod tests {
         assert_eq!(named["env"], json!({"K": "v"}));
         assert_eq!(named["type"], "large");
         assert_eq!(named["from"], "steery-image-ab");
+    }
+
+    /// A host is refreshed once stopped 10 days, while Boat still keeps its disk; never
+    /// while it runs, nor once its disk is gone.
+    #[test]
+    fn a_stopped_host_is_refreshed_from_ten_days_while_its_disk_is_kept() {
+        let host = |state: &str, stopped: Option<&str>, expired: Option<&str>| -> api::Host {
+            serde_json::from_value(json!({
+                "id": "bx_1", "state": state, "stoppedAt": stopped, "dataExpiredAt": expired
+            }))
+            .unwrap()
+        };
+        let stopped = "2026-10-01T12:00:00.000Z";
+        let at = u128::from(millis(Some(stopped)));
+        let day = 24 * 60 * 60 * 1000;
+        let archived = host("archived", Some(stopped), None);
+        assert!(!due(&archived, at + 10 * day - 1));
+        assert!(due(&archived, at + 10 * day));
+        assert!(due(&archived, at + 13 * day));
+        assert!(!due(&host("idle", Some(stopped), None), at + 13 * day));
+        assert!(!due(
+            &host("archived", Some(stopped), Some("2026-10-15T12:00:00Z")),
+            at + 15 * day
+        ));
+        assert!(!due(&host("archived", None, None), at + 13 * day));
     }
 }

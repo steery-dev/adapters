@@ -356,30 +356,42 @@ variables and a size; and, where the runtime names a Dockerfile, the image it bu
 - `hosts/list`: the hosts labelled `steery=host` and every label asked, page by page;
   one Boat cancelled (a make that got no machine) is none.
 - `hosts/ensure`: the oldest host labelled `steery=host` and `steery-key=<key>`, or one made
-  now (named `steery-<first 128 bits of the key's SHA-256, hex>`) with those labels and the
-  labels asked, from the saved snapshot the runtime names, the Dockerfile's image, or Boat's
-  own image, with the environment, variables and size its settings name, and waited for
-  until it runs (`ready`, `idle` or `running`). Boat's listing reads a new host back at
-  once, and each make is sent under an idempotency key from the key and its source, so a
-  make whose answer was lost is taken once. An image (`{image}`) is refused: Boat pulls none.
+  now with those labels and the labels asked, with the environment, variables and size its
+  settings name, and waited for until it runs (`ready`, `idle` or `running`). With no source
+  it is made from Boat's own image (named `steery-<first 128 bits of the key's SHA-256,
+  hex>`); with the Dockerfile's image or a saved snapshot it is a fork of that source's
+  template, below. Boat's listing reads a new host back at once, and each make and fork is
+  sent under an idempotency key from the key and its source, so one whose answer was lost
+  is taken once. An image (`{image}`) is refused: Boat pulls none.
+- **A template** is the host a source's hosts are forked from, kept stopped and found by
+  its name; a fork of a stopped host runs in about 3 s. Boat keeps none of the labels a
+  make from a saved snapshot asks for (seen 2026-10-29) and a fork keeps them, which is why
+  a source's hosts are forks. A saved snapshot's template, `steery-snapshot-<digest of its
+  name>`, is made from it. A template whose disk Boat no longer keeps is made again.
 - **A Dockerfile** is built the way Boat can: Boat starts every sandbox from its own image,
-  so the Dockerfile's steps run in order, as the setup script of a host made for the build
-  (labelled `steery=build`, `steery-build=<digest>`), and once they end well that host is
-  kept as the saved snapshot `steery-image-<first 64 bits of the text's SHA-256, hex>`, and
-  deleted. The same text is built once; every host of it is made from that snapshot, and
-  keeps its own disk when the snapshot is later forgotten. `RUN` (shell and exec form),
-  `USER` (`root` runs under `sudo`; any other user is the sandbox's own, `user`), `ENV` and
-  `ARG` (for the steps that follow, `$NAME` read as Docker reads it) and `WORKDIR` are
-  carried; `FROM` names an image Boat cannot start from, so Boat's own is used; a second
-  `FROM`, `COPY`, `ADD` and `RUN --mount` are refused, naming their line; what only a
-  container's start reads (`LABEL`, `CMD`, `ENTRYPOINT`, `EXPOSE`, …) changes no disk. A
-  failing step stops the build (`setupError` names its line and exit), its host is deleted,
-  and the next ensure builds again; a build an adapter left when it stopped is taken up. Only
-  the newest three of Steery's images are kept: ten saved snapshots are free.
+  so the Dockerfile's steps run in order as the setup script of its template,
+  `steery-image-<first 64 bits of the text's SHA-256, hex>` (labelled `steery=template`),
+  which is stopped once they end well. The same text is built once (about 35 s); every host
+  of it is a fork, and keeps its own disk when the template is later deleted. `RUN` (shell
+  and exec form), `USER` (`root` runs under `sudo`; any other user is the sandbox's own,
+  `user`), `ENV` and `ARG` (for the steps that follow, `$NAME` read as Docker reads it) and
+  `WORKDIR` are carried; `FROM` names an image Boat cannot start from, so Boat's own is
+  used; a second `FROM`, `COPY`, `ADD` and `RUN --mount` are refused, naming their line;
+  what only a container's start reads (`LABEL`, `CMD`, `ENTRYPOINT`, `EXPOSE`, …) changes no
+  disk. A failing step stops the build (`setupError` names its line and exit), its template
+  is deleted, and the next ensure builds again; a build an adapter left when it stopped is
+  taken up. Only the newest three of Steery's images are kept.
 - `hosts/start` resumes a stopped host (`POST /sandboxes/{id}/resume`, its auto-stop set 30
   minutes on) and waits until it runs; `hosts/stop` stops it (Boat keeps its disk) and waits
   until it is `archived`; `hosts/delete` deletes it and its disk and waits until Boat has
-  it no more. Boat keeps a stopped host's disk for 14 days: a start after that is
+  it no more.
+- **Disks kept past Boat's 14 days.** Boat deletes a stopped sandbox's disk 14 days after it
+  stopped. While the adapter runs, every hour (the first 10 minutes after it starts) it
+  starts each of its hosts and templates stopped 10 days or more and stops it 20 s later,
+  which keeps the disk 14 days more, so the runtime's own 30-day delete is what ends a host
+  never used again, and the model keeper keeps its sign-ins. One the runtime started in
+  those 20 s (its `steery host serve` runs) is left running. A machine whose adapter runs
+  on a computer that is off for the 14 days loses those disks: a start after that is
   `not-found`, the host gone for good.
 - `hosts/keepalive` sets the host's auto-stop 30 minutes from now (`PATCH`), past the
   runtime's own idle stop, so Boat stops only a host the runtime no longer reads.

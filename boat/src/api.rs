@@ -76,6 +76,12 @@ pub struct Host {
     /// The setup script's exit code and the end of its standard error, where it failed.
     #[serde(default)]
     pub setup_error: Option<String>,
+    /// When it last stopped, by any cause; absent while it runs.
+    #[serde(default)]
+    pub stopped_at: Option<String>,
+    /// When Boat deleted its disk, 14 days after it stopped; absent while Boat keeps it.
+    #[serde(default)]
+    pub data_expired_at: Option<String>,
 }
 
 impl Host {
@@ -179,6 +185,15 @@ pub struct Ssh {
 #[derive(Deserialize)]
 struct Hosted {
     url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Ran {
+    #[serde(default)]
+    exit_code: Option<i32>,
+    #[serde(default)]
+    stdout: String,
 }
 
 /// A fork of a host, as `POST /sandboxes/{id}/fork` takes it. A fork takes none of its
@@ -344,7 +359,9 @@ impl Boat {
             found.extend(page.sandboxes.into_iter().filter(|host| {
                 host.carries(labels)
                     && prefix.is_none_or(|prefix| {
-                        host.name.as_deref().is_some_and(|name| name.starts_with(prefix))
+                        host.name
+                            .as_deref()
+                            .is_some_and(|name| name.starts_with(prefix))
                     })
             }));
             match page.page_info {
@@ -439,6 +456,26 @@ impl Boat {
         )
         .await?;
         Ok(hosted.url)
+    }
+
+    /// `POST /sandboxes/{id}/commands`: `command` run in the host by its shell, waited for
+    /// `seconds` at most: its exit code (none where a signal ended it) and standard output.
+    pub async fn run(
+        &self,
+        id: &str,
+        command: &str,
+        seconds: u32,
+        deadline: Deadline,
+    ) -> Result<(Option<i32>, String), Fault> {
+        let ran: Ran = json(
+            send(
+                self.request(Method::POST, &host_path(id, "commands"), deadline)?
+                    .json(&json!({ "command": command, "timeoutSeconds": seconds })),
+            )
+            .await?,
+        )
+        .await?;
+        Ok((ran.exit_code, ran.stdout))
     }
 
     /// `POST /sandboxes/{id}/fork`: a new host from `id`'s newest snapshot, its id; retried
