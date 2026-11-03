@@ -180,7 +180,8 @@ method.
   signals only a process whose start time still matches.
 - `process/listening` asks `lsof -iTCP:<port> -sTCP:LISTEN`.
 - `service/plan` writes the LaunchAgent `~/Library/LaunchAgents/<label>.plist`, as the
-  runtime installs itself: `KeepAlive`, a lower priority, output appended to `log`, the
+  runtime installs itself: `KeepAlive`, `ProcessType Interactive` (every core, no launchd
+  throttling) at `Nice 10`, output appended to `log`, the
   `PATH` asked for merged with the one the plist on disk gave, and a `Listeners` socket on
   127.0.0.1:`port` handed to the runtime. Its commands are `launchctl bootout` (which may
   fail), `enable` and `bootstrap gui/<uid>`.

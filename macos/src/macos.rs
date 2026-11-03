@@ -328,9 +328,12 @@ pub async fn listening(listening: process::Listening) -> Result<process::Listene
 }
 
 /// A LaunchAgent, as the runtime installs itself: it runs the binary at login and keeps
-/// it running, handed its listener by launchd on 127.0.0.1:`port`, at a lower priority
-/// (macOS bounds a user's CPU no other way, so `cpu` is checked and has nothing to set),
-/// its output appended to `log`. It keeps every directory of the `PATH` the plist on
+/// it running, handed its listener by launchd on 127.0.0.1:`port`, its output appended to
+/// `log`. `ProcessType Interactive` lifts the light limits launchd puts on a job with none,
+/// which ran every turn at utility QoS on one cluster of cores (a turn's spinner got 3.6%
+/// of a core, 2026-11-03); `Nice 10` keeps it below its person's apps (macOS bounds a
+/// user's CPU no other way, so `cpu` is checked and has nothing to set). It keeps every
+/// directory of the `PATH` the plist on
 /// disk gave it. The commands unload the job an earlier plist loaded, only where launchd
 /// has one, so a first install says no `No such process`; enable it, which an earlier
 /// `launchctl disable` would otherwise keep from loading; and load it in this user's GUI
@@ -383,6 +386,7 @@ pub fn service_plan(home: &Path, plan: process::ServicePlan) -> Result<process::
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
   <key>ExitTimeOut</key><integer>{STOP_GRACE_SECS}</integer>
+  <key>ProcessType</key><string>Interactive</string>
   <key>Nice</key><integer>10</integer>
   <key>StandardOutPath</key><string>{log}</string>
   <key>StandardErrorPath</key><string>{log}</string>
