@@ -257,7 +257,7 @@ or `steery setup --adapter daytona --setting NAME[=VALUE]` on a computer):
 |---|---|---|
 | `DAYTONA_API_KEY` | secret, required | an API key from <https://app.daytona.io/dashboard/keys> |
 | `DAYTONA_API_URL` | optional | your Daytona API URL, for a self-hosted Daytona; absent: `https://app.daytona.io/api` |
-| `DAYTONA_TARGET` | optional | the region hosts are made in; absent: your organization's default |
+| `DAYTONA_TARGET` | optional | the region hosts are made in, such as `us` or `eu`; absent: your organization's default |
 | `DAYTONA_ENV` | secret, optional | environment set on every host it makes, one `NAME=VALUE` per line (blank and `#` lines skipped; the value is everything after the first `=`), passed to Daytona as it is; a malformed line refuses `initialize` naming its line number, never its value |
 
 It reads them from `initialize` only, never from its environment or a file. Build and
@@ -269,6 +269,9 @@ DAYTONA_API_KEY=… steery programs test target/debug/steery-adapter-daytona --s
 ```
 
 With the key, the check also lists your hosts (`hosts/list`); it makes none.
+
+A host's harnesses and their sign-ins come the Daytona way: in the snapshot the machine's
+source names (`steery setup --source snapshot:<name>`) and in `DAYTONA_ENV`.
 
 ## opensandbox
 
@@ -445,6 +448,11 @@ BOAT_API_KEY=… steery programs test target/debug/steery-adapter-boat --setting
 ```
 
 With the key, the check also lists your hosts (`hosts/list`); it makes none.
+
+Boat's free trial runs two sandboxes at once, and a machine keeps one spare host, so a trial
+machine runs one session at a time; a paid plan runs 100 sandboxes at once. Put the secrets
+that an agent's MCP servers need (a token, a `.env`) in the Boat environment: Boat gives them
+to every host.
 
 ## joined
 
