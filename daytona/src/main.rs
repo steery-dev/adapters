@@ -3,10 +3,11 @@
 //! paths) stay inside [`api`], which names the items around them by Steery's.
 //!
 //! Its client is built from the settings `initialize` passes, and from nothing else: the
-//! host, its image, credentials and network are the company's and Daytona's. The one
-//! environment a host is given is the person's own `DAYTONA_ENV`, passed to Daytona as it
-//! is; the adapter adds no image, environment, secret or network of its own, and Daytona's
-//! auto-stop stays the host's idle timer.
+//! host, its credentials and network are the company's and Daytona's. The one environment
+//! a host is given is the person's own `DAYTONA_ENV`, passed to Daytona as it is; the
+//! adapter adds no environment, secret or network of its own, and Daytona's auto-stop
+//! stays the host's idle timer. Its one addition is the disk of a host made from an image,
+//! `DAYTONA_DISK_GB`: Daytona's default snapshot has 3 GiB, which Steery's programs fill.
 
 mod api;
 
@@ -46,6 +47,15 @@ const FAILED: &[&str] = &["error", "build_failed"];
 const BUILDING: &[&str] = &["pending_build", "building_snapshot"];
 /// The longest line a refusal carries.
 const LINE_CHARS: usize = 300;
+/// Disk in GiB of each host made from an image, where `DAYTONA_DISK_GB` names none: the
+/// most Daytona gives an organization's sandbox by default.
+const DEFAULT_DISK_GB: u32 = 10;
+/// Daytona's default sandbox image, which a host made with no source is built from.
+/// Daytona takes a disk only with an image or a Dockerfile, never with a snapshot; its
+/// default snapshots give 10 GiB only at `daytona-large`, with 4 vCPUs and 8 GiB of memory
+/// (`daytona-small`, the default: 3 GiB; `daytona-medium`: 8 GiB). Daytona takes no
+/// `latest` tag.
+const DEFAULT_IMAGE: &str = "daytonaio/sandbox:0.11.0";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
@@ -95,6 +105,8 @@ impl Program for Adapter {
             )));
         }
         let given = |name: &str| params.settings.get(name).filter(|value| !value.is_empty());
+        let disk = disk_of(given("DAYTONA_DISK_GB").map(String::as_str))
+            .map_err(|why| Error::refused(refusal::REFUSED, why))?;
         let env = match given("DAYTONA_ENV") {
             Some(lines) => env_of(lines).map_err(|why| Error::refused(refusal::REFUSED, why))?,
             None => Env::default(),
@@ -106,6 +118,7 @@ impl Program for Adapter {
                     given("DAYTONA_API_URL").map(String::as_str),
                     given("DAYTONA_TARGET").cloned(),
                     env,
+                    disk,
                 )
                 .map_err(|why| Error::refused(refusal::REFUSED, format!("Daytona: {why}")))?,
             ),
@@ -166,6 +179,12 @@ impl Program for Adapter {
                     false,
                     "Environment for every sandbox, one NAME=VALUE per line (# comments); passed as Daytona's env",
                 ),
+                setting(
+                    "DAYTONA_DISK_GB",
+                    false,
+                    false,
+                    "Disk in GiB of each sandbox made from an image (Daytona allows 1 to 10 by default); absent: 10. Not applied to a snapshot",
+                ),
             ],
         })
     }
@@ -208,6 +227,43 @@ fn setting(name: &str, secret: bool, required: bool, about: &str) -> wire::Setti
         secret,
         required,
         about: about.into(),
+    }
+}
+
+/// The disk in GiB `DAYTONA_DISK_GB` names: a whole number of at least 1; [`DEFAULT_DISK_GB`]
+/// where it names none.
+fn disk_of(value: Option<&str>) -> Result<u32, String> {
+    let Some(value) = value else {
+        return Ok(DEFAULT_DISK_GB);
+    };
+    match value.trim().parse::<u32>() {
+        Ok(disk) if disk >= 1 => Ok(disk),
+        _ => Err(format!(
+            "DAYTONA_DISK_GB is a whole number of GiB, at least 1, not {value:?}"
+        )),
+    }
+}
+
+/// What `source` makes a host from, as the create takes it: the snapshot, or the image
+/// to build, and the disk. The disk goes with an image only: Daytona refuses resources with
+/// a snapshot, which stays the person's as it is. No source is Daytona's default image.
+fn made_from(
+    source: Option<&hosts::Source>,
+    disk: u32,
+) -> (Option<&str>, Option<BuildInfo>, Option<u32>) {
+    match source {
+        Some(hosts::Source::Snapshot(snapshot)) => (Some(snapshot.as_str()), None, None),
+        Some(hosts::Source::Image(reference)) => {
+            (None, Some(BuildInfo::image(reference)), Some(disk))
+        }
+        Some(hosts::Source::Dockerfile(text)) => (
+            None,
+            Some(BuildInfo {
+                dockerfile_content: text.clone(),
+            }),
+            Some(disk),
+        ),
+        None => (None, Some(BuildInfo::image(DEFAULT_IMAGE)), Some(disk)),
     }
 }
 
@@ -323,7 +379,7 @@ async fn list(daytona: &Daytona, params: hosts::List) -> Result<hosts::Listed, E
 }
 
 /// The host made for `key`, or one made for it now from the source asked, or from
-/// Daytona's default snapshot, and started.
+/// Daytona's default sandbox image with the disk [`DEFAULT_DISK_GB`] names, and started.
 ///
 /// It is found by its name, which Daytona keeps unique and reads back at once; its listing
 /// lags a new host by a second or more, so finding it by its labels would make a second
@@ -338,23 +394,14 @@ async fn ensure(daytona: &Daytona, params: hosts::Ensure) -> Result<hosts::Named
     let mut labels = params.labels;
     labels.insert(MINE.0.to_owned(), MINE.1.to_owned());
     labels.insert(KEY_LABEL.to_owned(), params.key.clone());
-    let (snapshot, build_info) = match &params.source {
-        Some(hosts::Source::Snapshot(snapshot)) => (Some(snapshot.as_str()), None),
-        Some(hosts::Source::Image(reference)) => (None, Some(BuildInfo::image(reference))),
-        Some(hosts::Source::Dockerfile(text)) => (
-            None,
-            Some(BuildInfo {
-                dockerfile_content: text.clone(),
-            }),
-        ),
-        None => (None, None),
-    };
+    let (snapshot, build_info, disk) = made_from(params.source.as_ref(), daytona.disk());
     let create = Create {
         name: &name,
         labels: &labels,
         snapshot,
         build_info,
         target: daytona.target(),
+        disk,
         env: daytona.env(),
     };
     let ensured = async {
@@ -689,7 +736,8 @@ mod tests {
     /// `status` with `body`.
     async fn listed(status: u16, body: &'static str) -> (String, String) {
         let url = api::tests::daytona_answering(Some(status), body).await;
-        let daytona = Daytona::new("sk-secret".into(), Some(&url), None, Env::default()).unwrap();
+        let daytona =
+            Daytona::new("sk-secret".into(), Some(&url), None, Env::default(), 10).unwrap();
         match list(&daytona, hosts::List { labels: None }).await {
             Err(Error::Refused { word, line }) => (word, line.unwrap_or_default()),
             other => panic!("{other:?}"),
@@ -822,6 +870,7 @@ mod tests {
                 snapshot: None,
                 build_info: None,
                 target: None,
+                disk: None,
                 env,
             })
             .unwrap()
@@ -829,5 +878,68 @@ mod tests {
         assert_eq!(body(&Env::default()).get("env"), None);
         let env = env_of("K=v").unwrap();
         assert_eq!(body(&env)["env"], serde_json::json!({"K": "v"}));
+    }
+
+    /// The create body of each source: the default is Daytona's sandbox image with the disk;
+    /// an image or Dockerfile of the person's has the disk; a snapshot of the person's has
+    /// none, since Daytona refuses resources with a snapshot.
+    #[test]
+    fn the_create_body_carries_the_disk_for_every_source_but_a_snapshot() {
+        let labels = BTreeMap::new();
+        let env = Env::default();
+        let body = |source: Option<hosts::Source>, disk: u32| {
+            let (snapshot, build_info, disk) = made_from(source.as_ref(), disk);
+            serde_json::to_value(Create {
+                name: "n",
+                labels: &labels,
+                snapshot,
+                build_info,
+                target: None,
+                disk,
+                env: &env,
+            })
+            .unwrap()
+        };
+        let default = body(None, DEFAULT_DISK_GB);
+        assert_eq!(default["disk"], 10);
+        assert_eq!(
+            default["buildInfo"]["dockerfileContent"],
+            format!("FROM {DEFAULT_IMAGE}\n")
+        );
+        assert_eq!(default.get("snapshot"), None);
+        assert_eq!(default.get("cpu"), None);
+        assert_eq!(default.get("memory"), None);
+        assert_eq!(body(None, 6)["disk"], 6);
+        let image = body(Some(hosts::Source::Image("ubuntu:22.04".into())), 10);
+        assert_eq!(image["disk"], 10);
+        assert_eq!(
+            image["buildInfo"]["dockerfileContent"],
+            "FROM ubuntu:22.04\n"
+        );
+        let dockerfile = body(
+            Some(hosts::Source::Dockerfile("FROM x:1\nRUN y\n".into())),
+            10,
+        );
+        assert_eq!(dockerfile["disk"], 10);
+        assert_eq!(
+            dockerfile["buildInfo"]["dockerfileContent"],
+            "FROM x:1\nRUN y\n"
+        );
+        let snapshot = body(Some(hosts::Source::Snapshot("mine".into())), 10);
+        assert_eq!(snapshot["snapshot"], "mine");
+        assert_eq!(snapshot.get("disk"), None);
+        assert_eq!(snapshot.get("buildInfo"), None);
+    }
+
+    #[test]
+    fn reads_the_disk_setting_as_whole_gib() {
+        assert_eq!(disk_of(None), Ok(10));
+        assert_eq!(disk_of(Some(" 4 ")), Ok(4));
+        for bad in ["0", "-1", "10G", "2.5", ""] {
+            assert!(
+                disk_of(Some(bad)).unwrap_err().contains("DAYTONA_DISK_GB"),
+                "{bad}"
+            );
+        }
     }
 }

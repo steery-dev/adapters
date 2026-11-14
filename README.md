@@ -201,8 +201,9 @@ REST API directly, over HTTPS (rustls): the control plane ([`openapi.json`](http
 toolbox ([`toolbox-openapi.json`](https://www.daytona.io/docs/toolbox-openapi.json)),
 through the toolbox proxy Daytona names for it. Daytona's own words for a host (its API
 paths) stay inside `src/api.rs`, whose items are named by Steery's words (`api::Host` is a host as
-Daytona answers it). It passes no image, environment, secret or network setting of its own,
-and leaves Daytona's auto-stop as the host's idle timer.
+Daytona answers it). It passes no environment, secret or network setting of its own,
+and leaves Daytona's auto-stop as the host's idle timer. Its one addition is the disk of a
+host made from an image (below).
 
 - `hosts/list`: the hosts labelled `steery=host` and every label asked, page by page.
   Daytona's listing lags a change by a second or more.
@@ -210,11 +211,18 @@ and leaves Daytona's auto-stop as the host's idle timer.
   one made under that name, labelled `steery=host`, `steery-key=<key>` and the labels
   asked, from the snapshot, the image (built `FROM` it) or the Dockerfile (Daytona's
   `buildInfo.dockerfileContent`, built in your account once per text) the runtime names, or
-  Daytona's default snapshot, with the environment `DAYTONA_ENV` names (Daytona's `env`,
+  with no source Daytona's default sandbox image (`daytonaio/sandbox`, built the same way),
+  with the environment `DAYTONA_ENV` names (Daytona's `env`,
   sent only when given), and waited for until it runs, through `pending_build` and
   `building_snapshot`. Daytona keeps names unique and reads them back at once, so an
   ensure sent twice, even at once, makes one host. A host of that name without those
   labels is refused; one being deleted is waited out; one still building is waited for.
+  A host made from an image, a Dockerfile or no source has `DAYTONA_DISK_GB` GiB of disk
+  (Daytona's `disk`; absent: 10, the most Daytona gives a sandbox by default),
+  with its CPU and memory at Daytona's defaults. Daytona refuses resources with a snapshot
+  (HTTP 400 `Cannot specify Sandbox resources when using a snapshot`), so a host made from
+  your snapshot is made as it always was, with that snapshot's disk. Daytona's own default
+  snapshot, `daytona-small`, has 3 GiB, which Steery's harnesses and programs fill.
 - `hosts/start`, `stop`, `delete` and `archive` ask Daytona and wait until the host is
   `started`, `stopped`, `destroyed` or `archived`, reading it again every second (every
   two while archiving); `error` or `build_failed` fails. Archive stops a started host
@@ -258,6 +266,7 @@ or `steery setup --adapter daytona --setting NAME[=VALUE]` on a computer):
 | `DAYTONA_API_KEY` | secret, required | an API key from <https://app.daytona.io/dashboard/keys> |
 | `DAYTONA_API_URL` | optional | your Daytona API URL, for a self-hosted Daytona; absent: `https://app.daytona.io/api` |
 | `DAYTONA_TARGET` | optional | the region hosts are made in, such as `us` or `eu`; absent: your organization's default |
+| `DAYTONA_DISK_GB` | optional | disk in GiB of each host made from an image, a Dockerfile or no source, a whole number of at least 1 that your organization's sandbox limit allows (Daytona's default limit is 10); absent: `10`. Not applied to a snapshot |
 | `DAYTONA_ENV` | secret, optional | environment set on every host it makes, one `NAME=VALUE` per line (blank and `#` lines skipped; the value is everything after the first `=`), passed to Daytona as it is; a malformed line refuses `initialize` naming its line number, never its value |
 
 It reads them from `initialize` only, never from its environment or a file. Build and

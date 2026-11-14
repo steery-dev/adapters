@@ -84,6 +84,10 @@ pub struct Create<'a> {
     pub build_info: Option<BuildInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<&'a str>,
+    /// Disk in GiB. Daytona refuses resources with a snapshot (HTTP 400 "Cannot specify
+    /// Sandbox resources when using a snapshot"), so it is set with `build_info` only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disk: Option<u32>,
     #[serde(skip_serializing_if = "Env::is_empty")]
     pub env: &'a Env,
 }
@@ -182,6 +186,7 @@ pub struct Daytona {
     key: String,
     target: Option<String>,
     env: Env,
+    disk: u32,
 }
 
 impl Daytona {
@@ -190,6 +195,7 @@ impl Daytona {
         api: Option<&str>,
         target: Option<String>,
         env: Env,
+        disk: u32,
     ) -> Result<Self, String> {
         let http = reqwest::Client::builder()
             .user_agent(concat!(
@@ -205,6 +211,7 @@ impl Daytona {
             key,
             target,
             env,
+            disk,
         })
     }
 
@@ -219,6 +226,11 @@ impl Daytona {
 
     pub fn env(&self) -> &Env {
         &self.env
+    }
+
+    /// The disk in GiB of each host made from an image.
+    pub fn disk(&self) -> u32 {
+        self.disk
     }
 
     fn request(&self, method: Method, url: &str, within: Duration) -> RequestBuilder {
@@ -574,7 +586,7 @@ pub mod tests {
 
     async fn fault_of(status: Option<u16>) -> Fault {
         let url = daytona_answering(status, r#"{"message":"said"}"#).await;
-        let daytona = Daytona::new("sk".into(), Some(&url), None, Env::default()).unwrap();
+        let daytona = Daytona::new("sk".into(), Some(&url), None, Env::default(), 10).unwrap();
         let request = daytona.request(Method::GET, &url, Duration::from_millis(300));
         send(request).await.unwrap_err()
     }
