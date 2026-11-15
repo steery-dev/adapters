@@ -38,6 +38,9 @@ pub enum Fault {
     Conflict(String),
     /// Anything else Daytona answered, or a host that ended in a state it was not asked for.
     Failed(String),
+    /// Daytona holds the host in an error state (`error`, `build_failed`), and what it said
+    /// of why. A host that Daytona cannot recover stays in it.
+    Errored(String),
 }
 
 /// A host as Daytona answers it, as far as the adapter reads it.
@@ -53,6 +56,10 @@ pub struct Host {
     pub created_at: Option<String>,
     #[serde(default)]
     pub error_reason: Option<String>,
+    /// Whether Daytona can recover the host from its error state, as `GET /sandbox/{id}`
+    /// says (`recoverable`): absent where Daytona says nothing, which is not recoverable.
+    #[serde(default)]
+    pub recoverable: Option<bool>,
     #[serde(default)]
     pub toolbox_proxy_url: Option<String>,
 }
@@ -61,6 +68,16 @@ impl Host {
     /// Its state, `unknown` where Daytona names none.
     pub fn state(&self) -> &str {
         self.state.as_deref().unwrap_or("unknown")
+    }
+
+    /// Why Daytona holds it in an error state, in Daytona's own words.
+    pub fn reason(&self) -> &str {
+        self.error_reason.as_deref().unwrap_or("no reason given")
+    }
+
+    /// Whether Daytona says that it can recover the host from its error state.
+    pub fn recoverable(&self) -> bool {
+        self.recoverable == Some(true)
     }
 }
 
@@ -331,10 +348,10 @@ impl Daytona {
         json(send(request).await?).await
     }
 
-    /// Polls `id` until it is in one of `targets`, every `every`. A state in `fails`, or
-    /// `destroyed` where it is not a target, fails; a host Daytona no longer has is
-    /// `destroyed`. A failed reading is read again until the deadline, as Daytona's own
-    /// clients do, but a refused key or a missing host is final.
+    /// Polls `id` until it is in one of `targets`, every `every`. A state in `fails` is
+    /// [`Fault::Errored`], and `destroyed` where it is not a target fails; a host Daytona no
+    /// longer has is `destroyed`. A failed reading is read again until the deadline, as
+    /// Daytona's own clients do, but a refused key or a missing host is final.
     pub async fn wait(
         &self,
         id: &str,
@@ -359,10 +376,16 @@ impl Daytona {
                     if targets.contains(&state) {
                         return Ok(state.to_owned());
                     }
-                    if fails.contains(&state) || state == "destroyed" {
-                        let reason = host.error_reason.as_deref().unwrap_or("no reason given");
+                    if fails.contains(&state) {
+                        return Err(Fault::Errored(format!(
+                            "host {id} failed to {what}: {state}: {}",
+                            host.reason()
+                        )));
+                    }
+                    if state == "destroyed" {
                         return Err(Fault::Failed(format!(
-                            "host {id} failed to {what}: {state}: {reason}"
+                            "host {id} failed to {what}: {state}: {}",
+                            host.reason()
                         )));
                     }
                     state.to_owned()
@@ -582,6 +605,46 @@ pub mod tests {
             }
         });
         url
+    }
+
+    /// A Daytona on localhost that answers its requests one after another with `answers`
+    /// (status and body), the last again for any more, and keeps the request line of each
+    /// (`POST /sandbox/h/recover`) in order. Its URL, and those lines.
+    pub async fn daytona_scripted(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            let mut next = 0;
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut request = Vec::new();
+                let mut chunk = [0u8; 4096];
+                while !request.windows(4).any(|end| end == b"\r\n\r\n") {
+                    match socket.read(&mut chunk).await {
+                        Ok(0) | Err(_) => break,
+                        Ok(read) => request.extend_from_slice(&chunk[..read]),
+                    }
+                }
+                let line = String::from_utf8_lossy(&request)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_end_matches(" HTTP/1.1")
+                    .to_owned();
+                kept.lock().unwrap().push(line);
+                let (status, body) = answers[next.min(answers.len() - 1)];
+                next += 1;
+                let answer = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+            }
+        });
+        (url, seen)
     }
 
     async fn fault_of(status: Option<u16>) -> Fault {

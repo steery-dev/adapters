@@ -22,6 +22,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use steery_sdk::wire::{self, hosts};
 use steery_sdk::{Error, PROTOCOL, Program, method, refusal};
+use tokio::time::Instant;
 
 use api::{BuildInfo, Create, Daytona, Deadline, Env, Fault};
 
@@ -43,6 +44,9 @@ const POLL: Duration = Duration::from_secs(1);
 const ARCHIVE_POLL: Duration = Duration::from_secs(2);
 /// The states a host that is being changed fails in.
 const FAILED: &[&str] = &["error", "build_failed"];
+/// How long a host that Daytona was asked to recover may still read in its error state, which
+/// Daytona leaves only after its own answer: past it, the recovery did not take.
+const RECOVERING: Duration = Duration::from_secs(30);
 /// The states of a host whose image Daytona still builds from a Dockerfile.
 const BUILDING: &[&str] = &["pending_build", "building_snapshot"];
 /// The longest line a refusal carries.
@@ -313,7 +317,9 @@ fn refuse(daytona: &Daytona, fault: Fault, otherwise: &'static str) -> Error {
         Fault::Offline(line) => (refusal::OFFLINE, format!("Daytona: {line}")),
         // Daytona answered, and the host was not there in time.
         Fault::TimedOut(line) => (refusal::REFUSED, format!("Daytona: {line} (timed out)")),
-        Fault::Conflict(line) | Fault::Failed(line) => (otherwise, format!("Daytona: {line}")),
+        Fault::Conflict(line) | Fault::Failed(line) | Fault::Errored(line) => {
+            (otherwise, format!("Daytona: {line}"))
+        }
     };
     Error::refused(word, one_line(daytona.key(), &line))
 }
@@ -469,19 +475,89 @@ fn owned(host: &api::Host, key: &str) -> bool {
     })
 }
 
+/// `hosts/start`. A host that Daytona keeps in an error state is `start-failed` with Daytona's
+/// own reason, once the adapter tried to recover it ([`started`]); that is the one failure
+/// that this method says so. Anything else Daytona refuses is `refused` or `offline` as
+/// [`refuse`] says, which the runtime tries again after a wait.
 async fn start(daytona: &Daytona, params: hosts::Target) -> Result<hosts::State, Error> {
     let id = named(&params.host)?;
-    let deadline = Deadline::after(LONG_SECONDS);
-    let started = async {
-        daytona.act(id, "start", deadline).await?;
-        daytona
-            .wait(id, &["started"], FAILED, "start", POLL, deadline)
-            .await
-    };
-    let state = started
+    let state = started(daytona, id, Deadline::after(LONG_SECONDS))
         .await
-        .map_err(|fault| refuse(daytona, fault, refusal::START_FAILED))?;
+        .map_err(|fault| match fault {
+            Fault::Errored(line) => refuse(daytona, Fault::Failed(line), refusal::START_FAILED),
+            fault => refuse(daytona, fault, refusal::REFUSED),
+        })?;
     Ok(hosts::State { state })
+}
+
+/// Starts `id` and waits until it is started. Daytona refuses to start a host that it keeps in
+/// an error state (HTTP 400, "Sandbox is in an errored state"), so it is recovered once
+/// instead where Daytona says that it can be (`recoverable`: `POST /sandbox/{id}/recover`,
+/// which restores the host and starts it). A host that Daytona cannot recover, whose recovery
+/// it refuses, or that is in the error state still after it, is [`Fault::Errored`] with
+/// Daytona's reason for its state.
+async fn started(daytona: &Daytona, id: &str, deadline: Deadline) -> Result<String, Fault> {
+    let was = daytona.get(id, deadline).await?;
+    if FAILED.contains(&was.state()) {
+        recovered(daytona, id, &was, deadline).await?;
+    } else {
+        daytona.act(id, "start", deadline).await?;
+    }
+    daytona
+        .wait(id, &["started"], FAILED, "start", POLL, deadline)
+        .await
+}
+
+/// Asks Daytona once to recover `id`, which `was` reads in an error state, and waits until it
+/// reads in none.
+async fn recovered(
+    daytona: &Daytona,
+    id: &str,
+    was: &api::Host,
+    deadline: Deadline,
+) -> Result<(), Fault> {
+    let said = format!(
+        "host {id} is in the state {}: {}",
+        was.state(),
+        was.reason()
+    );
+    if was.state() != "error" || !was.recoverable() {
+        return Err(Fault::Errored(format!("{said}; Daytona cannot recover it")));
+    }
+    match daytona.act(id, "recover", deadline).await {
+        Ok(()) => {}
+        // Gone, or Daytona down: not what the recovery says.
+        Err(fault @ (Fault::NotFound(_) | Fault::Offline(_) | Fault::TimedOut(_))) => {
+            return Err(fault);
+        }
+        // Daytona refused it, whatever its status (HTTP 403 where the storage of the host
+        // cannot grow further, 409 for a recovery tried within the hour): it stays so.
+        Err(
+            Fault::KeyRefused { said: why, .. }
+            | Fault::Conflict(why)
+            | Fault::Failed(why)
+            | Fault::Errored(why),
+        ) => {
+            return Err(Fault::Errored(format!(
+                "{said}; Daytona refused to recover it: {why}"
+            )));
+        }
+    }
+    // Daytona recovers it after it answers: the host may read in the error state a moment.
+    let until = Instant::now() + RECOVERING;
+    loop {
+        let now = daytona.get(id, deadline).await?;
+        if !FAILED.contains(&now.state()) {
+            return Ok(());
+        }
+        if Instant::now() >= until {
+            return Err(Fault::Errored(format!(
+                "{said}; it was still so {} s after Daytona recovered it",
+                RECOVERING.as_secs()
+            )));
+        }
+        tokio::time::sleep(POLL).await;
+    }
 }
 
 async fn stop(daytona: &Daytona, params: hosts::Target) -> Result<hosts::State, Error> {
@@ -764,6 +840,101 @@ mod tests {
             let (word, line) = listed(status, "").await;
             assert_eq!(word, refusal::OFFLINE, "{line}");
         }
+    }
+
+    /// The refusal `start` answers against a Daytona that answers `answers` in turn, and the
+    /// requests it got.
+    async fn started_against(
+        answers: Vec<(u16, &'static str)>,
+    ) -> (Result<hosts::State, Error>, Vec<String>) {
+        let (url, seen) = api::tests::daytona_scripted(answers).await;
+        let daytona =
+            Daytona::new("sk-secret".into(), Some(&url), None, Env::default(), 10).unwrap();
+        let target = hosts::Target { host: "h".into() };
+        let answer = start(&daytona, target).await;
+        let seen = seen.lock().unwrap().clone();
+        (answer, seen)
+    }
+
+    /// An errored sandbox that Daytona cannot recover is `start-failed` with its reason, and
+    /// the adapter asks no start of it (Daytona refuses that with HTTP 400, "Sandbox is in an
+    /// errored state", which the runtime read every minute 7,570 times on 2026-11-13).
+    #[tokio::test]
+    async fn an_errored_host_that_cannot_be_recovered_is_start_failed_saying_why() {
+        let (answer, seen) = started_against(vec![(
+            200,
+            r#"{"id":"h","state":"error","errorReason":"No space left on device","recoverable":false}"#,
+        )])
+        .await;
+        let Err(Error::Refused { word, line }) = answer else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(word, refusal::START_FAILED);
+        let line = line.unwrap_or_default();
+        assert!(line.contains("No space left on device"), "{line}");
+        assert!(line.contains("cannot recover"), "{line}");
+        assert_eq!(seen, ["GET /sandbox/h"]);
+    }
+
+    /// A recoverable one is recovered once, which starts it, and then waited for.
+    #[tokio::test]
+    async fn a_recoverable_errored_host_is_recovered_once_then_started() {
+        let (answer, seen) = started_against(vec![
+            (
+                200,
+                r#"{"id":"h","state":"error","errorReason":"timeout while starting","recoverable":true}"#,
+            ),
+            (200, r#"{"id":"h","state":"restoring"}"#),
+            (200, r#"{"id":"h","state":"starting"}"#),
+            (200, r#"{"id":"h","state":"started"}"#),
+        ])
+        .await;
+        assert_eq!(answer.unwrap().state, "started");
+        assert_eq!(
+            seen,
+            [
+                "GET /sandbox/h",
+                "POST /sandbox/h/recover",
+                "GET /sandbox/h",
+                "GET /sandbox/h"
+            ]
+        );
+    }
+
+    /// A recovery that Daytona refuses leaves the host errored, with what Daytona said, and the
+    /// adapter asks it no more.
+    #[tokio::test]
+    async fn a_refused_recovery_is_start_failed_with_what_daytona_said() {
+        let (answer, seen) = started_against(vec![
+            (
+                200,
+                r#"{"id":"h","state":"error","errorReason":"out of room","recoverable":true}"#,
+            ),
+            (
+                403,
+                r#"{"message":"Sandbox storage cannot be further expanded"}"#,
+            ),
+        ])
+        .await;
+        let Err(Error::Refused { word, line }) = answer else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(word, refusal::START_FAILED);
+        let line = line.unwrap_or_default();
+        assert!(line.contains("cannot be further expanded"), "{line}");
+        assert_eq!(seen, ["GET /sandbox/h", "POST /sandbox/h/recover"]);
+    }
+
+    /// A start Daytona refuses for another reason is no errored host: `refused`, which the
+    /// runtime tries again after a wait.
+    #[tokio::test]
+    async fn another_refusal_of_a_start_is_not_start_failed() {
+        let (answer, _) =
+            started_against(vec![(409, r#"{"message":"state change in progress"}"#)]).await;
+        let Err(Error::Refused { word, .. }) = answer else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(word, refusal::REFUSED);
     }
 
     /// Without `ssh` on this computer no channel can be had, so `hosts/channel` refuses

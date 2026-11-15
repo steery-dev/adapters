@@ -228,6 +228,16 @@ host made from an image (below).
   two while archiving); `error` or `build_failed` fails. Archive stops a started host
   first, since Daytona archives only a stopped one. Its filesystem survives a stop and an
   archive.
+- `hosts/start` of a host that Daytona keeps in an error state (`state` `error` or
+  `build_failed`) reads it first, since Daytona refuses to start it (HTTP 400 `Sandbox is in
+  an errored state`). Where Daytona says that the host is `recoverable`, it asks Daytona once
+  to recover it (`POST /sandbox/{id}/recover`, which restores the host and starts it), waits
+  up to 30 s for it to leave the error state, then waits for `started`. Where Daytona says
+  it is not recoverable, refuses the recovery (HTTP 403 where its storage cannot grow
+  further, 409 for a recovery tried within the hour), or leaves the host in the error state,
+  the start is refused `start-failed` with the host's `errorReason`. `start-failed` is said
+  of this and nothing else in `hosts/start`, so the runtime can keep such a host and attach
+  it no more until its session is used, never after a wait.
 - `hosts/keepalive` refreshes the host's last activity, which auto-stop counts from.
 - `hosts/expose` makes the host public (`POST /sandbox/{id}/public/true`) and answers the
   port's preview URL (`https://<port>-<id>.<Daytona's proxy>`), with no headers: any caller
@@ -254,8 +264,10 @@ reached, a gateway answering for it (HTTP 502, 503, 504), or a request with no a
 its time — a retry the server bounds; `refused` for a refused API key (HTTP 401, 403),
 whose line names the setting to give again (`Daytona refused the API key (HTTP 401: …):
 give DAYTONA_API_KEY again`), since a bad key does not heal by waiting; `start-failed` (a
-host that could not be made or started); or `refused`, which is also a host that did not
-reach the state asked for in time, and a put whose upload got no answer by its bound. Each
+host that could not be made, or that Daytona keeps in an error state in `hosts/start`);
+or `refused`, which is also a host that did not reach the state asked for in time, any
+other start that Daytona refuses (a start still changing state, HTTP 409), and a put whose
+upload got no answer by its bound. Each
 line is Daytona's own message, without the API key.
 
 Its settings, given once where the machine is added (on Steery's web for a cloud machine,
